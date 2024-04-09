@@ -7,8 +7,15 @@
         :source="logoSource"
         :name="installationName"
         :account-id="accountId"
-        class="m-4 mb-10"
+        class="m-4"
       />
+
+      <div class="w-8 h-8 m-2 mb-8">
+        <a href="https://aitbotsync.aitbase.com" target="_blank">
+          <img src="/brand-assets/aitlogo.svg" alt="AIT Manage Booking" />
+        </a>
+      </div>
+
       <primary-nav-item
         v-for="menuItem in menuItems"
         :key="menuItem.toState"
