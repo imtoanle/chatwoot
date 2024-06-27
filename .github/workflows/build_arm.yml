@@ -2,11 +2,6 @@ name: Custom Docker Image Auto Release
 
 on:
   workflow_dispatch:
-    inputs:
-      branch:
-        type: string
-        description: The branch to build
-        default: main
 
 permissions:
   packages: write
@@ -18,8 +13,6 @@ jobs:
     steps:
       - name: Check out branch
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.branch }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -44,6 +37,10 @@ jobs:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Get branch name
+        id: get_branch
+        run: echo "BRANCH_NAME=$(echo ${GITHUB_REF#refs/heads/})" >> $GITHUB_ENV
 
       - name: Generate docker image tags
         id: metadata
@@ -55,6 +52,7 @@ jobs:
             name=ghcr.io/${{ github.repository_owner }}/chatwoot
           tags: |
             type=raw,value=${{ github.event.inputs.branch }},enable=true
+            type=raw,value=${{ env.BRANCH_NAME }},enable=true
 
       - name: Build and push server
         uses: docker/build-push-action@v5
