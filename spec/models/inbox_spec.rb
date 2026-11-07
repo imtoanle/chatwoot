@@ -41,6 +41,34 @@ RSpec.describe Inbox do
     it_behaves_like 'avatarable'
   end
 
+  describe 'account teardown' do
+    it 'destroys an orphaned inbox after its account has been deleted' do
+      account = create(:account)
+      inbox = create(:inbox, account: account)
+      account.delete
+
+      orphaned_inbox = described_class.find(inbox.id)
+
+      expect { orphaned_inbox.destroy! }.not_to raise_error
+    end
+  end
+
+  describe 'filtered unread count invalidation' do
+    let(:account) { create(:account) }
+    let(:inbox) { create(:inbox, account: account) }
+    let(:store) { Conversations::UnreadCounts::FilteredCountStore }
+
+    before do
+      account.enable_features!(:unread_count_for_filters)
+    end
+
+    it 'invalidates saved folder snapshots when destroyed' do
+      expect do
+        inbox.destroy!
+      end.to change { store.conversation_version(account.id) }.by(1)
+    end
+  end
+
   describe '#add_members' do
     let(:inbox) { FactoryBot.create(:inbox) }
 
@@ -85,6 +113,41 @@ RSpec.describe Inbox do
                                                                           account: inbox.account,
                                                                           cache_keys: inbox.account.cache_keys
                                                                         )
+    end
+  end
+
+  describe 'agent availability' do
+    let(:account) { create(:account) }
+    let(:inbox) { create(:inbox, account: account) }
+    let(:agent) { create(:user, account: account, role: :agent) }
+    let(:teammate) { create(:user, account: account, role: :agent) }
+
+    before do
+      create(:inbox_member, inbox: inbox, user: agent)
+      create(:inbox_member, inbox: inbox, user: teammate)
+      allow(OnlineStatusTracker).to receive(:get_available_users)
+        .and_return(agent.id.to_s => 'online', teammate.id.to_s => 'online')
+    end
+
+    it 'leaves agents who do not take conversations out of the available agents' do
+      agent.account_users.find_by(account: account).update!(accepts_conversations: false)
+
+      expect(inbox.available_agents.map(&:user)).to contain_exactly(teammate)
+      expect(inbox.available_call_agents.map(&:user)).to contain_exactly(agent, teammate)
+    end
+
+    it 'leaves agents who do not take calls out of the available call agents' do
+      agent.account_users.find_by(account: account).update!(accepts_calls: false)
+
+      expect(inbox.available_call_agents.map(&:user)).to contain_exactly(teammate)
+      expect(inbox.available_agents.map(&:user)).to contain_exactly(agent, teammate)
+    end
+
+    it 'leaves agents who are not online out of both' do
+      allow(OnlineStatusTracker).to receive(:get_available_users).and_return(teammate.id.to_s => 'online', agent.id.to_s => 'busy')
+
+      expect(inbox.available_agents.map(&:user)).to contain_exactly(teammate)
+      expect(inbox.available_call_agents.map(&:user)).to contain_exactly(teammate)
     end
   end
 
@@ -164,31 +227,7 @@ RSpec.describe Inbox do
     let(:inbox) { FactoryBot.create(:inbox) }
 
     context 'when validating inbox name' do
-      it 'does not allow any special character at the end' do
-        inbox.name = 'this is my inbox name-'
-        expect(inbox).not_to be_valid
-        expect(inbox.errors.full_messages).to eq(
-          ['Name should not start or end with symbols, and it should not have < > / \\ @ characters.']
-        )
-      end
-
-      it 'does not allow any special character at the start' do
-        inbox.name = '-this is my inbox name'
-        expect(inbox).not_to be_valid
-        expect(inbox.errors.full_messages).to eq(
-          ['Name should not start or end with symbols, and it should not have < > / \\ @ characters.']
-        )
-      end
-
-      it 'does not allow chacters like /\@<> in the entire string' do
-        inbox.name = 'inbox@name'
-        expect(inbox).not_to be_valid
-        expect(inbox.errors.full_messages).to eq(
-          ['Name should not start or end with symbols, and it should not have < > / \\ @ characters.']
-        )
-      end
-
-      it 'does not empty string' do
+      it 'does not allow empty string' do
         inbox.name = ''
         expect(inbox).not_to be_valid
         expect(inbox.errors.full_messages[0]).to eq(
@@ -280,6 +319,136 @@ RSpec.describe Inbox do
     it 'updates the cache key after touch' do
       expect(inbox.account).to receive(:update_cache_key).with('inbox')
       inbox.touch # rubocop:disable Rails/SkipsModelValidations
+    end
+  end
+
+  describe '#sanitized_name' do
+    context 'when inbox name contains forbidden characters' do
+      it 'removes forbidden and spam-trigger characters' do
+        inbox = FactoryBot.build(:inbox, name: 'Test/Name\\With<Bad>@Characters"And\';:Quotes!#$%')
+        expect(inbox.sanitized_name).to eq('Test/NameWithBadCharactersAnd\'Quotes')
+      end
+    end
+
+    context 'when inbox name has leading/trailing non-word characters' do
+      it 'removes leading and trailing symbols' do
+        inbox = FactoryBot.build(:inbox, name: '!!!Test Name***')
+        expect(inbox.sanitized_name).to eq('Test Name')
+      end
+
+      it 'handles mixed leading/trailing characters' do
+        inbox = FactoryBot.build(:inbox, name: '###@@@Test Inbox Name$$$%%')
+        expect(inbox.sanitized_name).to eq('Test Inbox Name')
+      end
+    end
+
+    context 'when inbox name has multiple spaces' do
+      it 'normalizes multiple spaces to single space' do
+        inbox = FactoryBot.build(:inbox, name: 'Test    Multiple     Spaces')
+        expect(inbox.sanitized_name).to eq('Test Multiple Spaces')
+      end
+
+      it 'handles tabs and other whitespace' do
+        inbox = FactoryBot.build(:inbox, name: "Test\t\nMultiple\r\nSpaces")
+        expect(inbox.sanitized_name).to eq('Test Multiple Spaces')
+      end
+    end
+
+    context 'when inbox name has leading/trailing whitespace' do
+      it 'strips whitespace' do
+        inbox = FactoryBot.build(:inbox, name: '   Test Name   ')
+        expect(inbox.sanitized_name).to eq('Test Name')
+      end
+    end
+
+    context 'when inbox name becomes empty after sanitization' do
+      context 'with email channel' do
+        it 'falls back to email local part' do
+          email_channel = FactoryBot.build(:channel_email, email: 'support@example.com')
+          inbox = FactoryBot.build(:inbox, name: '\\<>@"', channel: email_channel)
+          expect(inbox.sanitized_name).to eq('Support')
+        end
+
+        it 'handles email with complex local part' do
+          email_channel = FactoryBot.build(:channel_email, email: 'help-desk_team@example.com')
+          inbox = FactoryBot.build(:inbox, name: '!!!@@@', channel: email_channel)
+          expect(inbox.sanitized_name).to eq('Help Desk Team')
+        end
+      end
+
+      context 'with non-email channel' do
+        it 'returns empty string when name becomes blank' do
+          web_widget_channel = FactoryBot.build(:channel_widget)
+          inbox = FactoryBot.build(:inbox, name: '\\<>@"', channel: web_widget_channel)
+          expect(inbox.sanitized_name).to eq('')
+        end
+      end
+    end
+
+    context 'when inbox name is blank initially' do
+      context 'with email channel' do
+        it 'uses email local part as fallback' do
+          email_channel = FactoryBot.build(:channel_email, email: 'customer-care@example.com')
+          inbox = FactoryBot.build(:inbox, name: '', channel: email_channel)
+          expect(inbox.sanitized_name).to eq('Customer Care')
+        end
+      end
+
+      context 'with non-email channel' do
+        it 'returns empty string' do
+          api_channel = FactoryBot.build(:channel_api)
+          inbox = FactoryBot.build(:inbox, name: '', channel: api_channel)
+          expect(inbox.sanitized_name).to eq('')
+        end
+      end
+    end
+
+    context 'when inbox name contains valid characters' do
+      it 'preserves valid characters like hyphens, underscores, and dots' do
+        inbox = FactoryBot.build(:inbox, name: 'Test-Name_With.Valid-Characters')
+        expect(inbox.sanitized_name).to eq('Test-Name_With.Valid-Characters')
+      end
+
+      it 'preserves alphanumeric characters and spaces' do
+        inbox = FactoryBot.build(:inbox, name: 'Customer Support 123')
+        expect(inbox.sanitized_name).to eq('Customer Support 123')
+      end
+
+      it 'preserves balanced safe characters but removes spam-trigger symbols' do
+        inbox = FactoryBot.build(:inbox, name: "Test!#$%&'*+/=?^_`{|}~-Name")
+        expect(inbox.sanitized_name).to eq("Test'/_-Name")
+      end
+
+      it 'keeps commonly used safe characters' do
+        inbox = FactoryBot.build(:inbox, name: "Support/Help's Team.Desk_2024-Main")
+        expect(inbox.sanitized_name).to eq("Support/Help's Team.Desk_2024-Main")
+      end
+    end
+
+    context 'when inbox name contains problematic characters for email headers' do
+      it 'preserves Unicode symbols (trademark, etc.)' do
+        inbox = FactoryBot.build(:inbox, name: 'Test™Name®With©Special™Characters')
+        expect(inbox.sanitized_name).to eq('Test™Name®With©Special™Characters')
+      end
+    end
+
+    context 'with edge cases' do
+      it 'handles nil name gracefully' do
+        inbox = FactoryBot.build(:inbox)
+        allow(inbox).to receive(:name).and_return(nil)
+        expect { inbox.sanitized_name }.not_to raise_error
+      end
+
+      it 'handles very long names' do
+        long_name = 'A' * 1000
+        inbox = FactoryBot.build(:inbox, name: long_name)
+        expect(inbox.sanitized_name).to eq(long_name)
+      end
+
+      it 'handles unicode characters and preserves emojis' do
+        inbox = FactoryBot.build(:inbox, name: 'Test Name with émojis 🎉')
+        expect(inbox.sanitized_name).to eq('Test Name with émojis 🎉')
+      end
     end
   end
 end

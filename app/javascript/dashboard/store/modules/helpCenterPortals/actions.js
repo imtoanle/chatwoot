@@ -90,13 +90,13 @@ export const actions = {
     }
   },
 
-  deleteLogo: async ({ commit }, { portalSlug }) => {
+  deleteLogo: async ({ commit }, { portalSlug, isDarkLogo = false }) => {
     commit(types.SET_HELP_PORTAL_UI_FLAG, {
       uiFlags: { isUpdating: true },
       portalSlug,
     });
     try {
-      await portalAPIs.deleteLogo(portalSlug);
+      await portalAPIs.deleteLogo(portalSlug, isDarkLogo);
     } catch (error) {
       throwErrorMessage(error);
     } finally {
@@ -115,5 +115,25 @@ export const actions = {
     commit(types.SET_PORTAL_SWITCHING_FLAG, {
       isSwitching,
     });
+  },
+
+  sendCnameInstructions: async (_, { portalSlug, email }) => {
+    try {
+      await portalAPIs.sendCnameInstructions(portalSlug, email);
+    } catch (error) {
+      throwErrorMessage(error);
+    }
+  },
+
+  sslStatus: async ({ commit }, { portalSlug }) => {
+    try {
+      commit(types.SET_UI_FLAG, { isFetchingSSLStatus: true });
+      const { data } = await portalAPIs.sslStatus(portalSlug);
+      commit(types.SET_SSL_SETTINGS, { portalSlug, sslSettings: data });
+    } catch (error) {
+      throwErrorMessage(error);
+    } finally {
+      commit(types.SET_UI_FLAG, { isFetchingSSLStatus: false });
+    }
   },
 };

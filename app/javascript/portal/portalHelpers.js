@@ -7,19 +7,29 @@ import { isSameHost } from '@chatwoot/utils';
 import slugifyWithCounter from '@sindresorhus/slugify';
 import PublicArticleSearch from './components/PublicArticleSearch.vue';
 import TableOfContents from './components/TableOfContents.vue';
+import SidebarThemeToggle from './components/SidebarThemeToggle.vue';
 import { initializeTheme } from './portalThemeHelper.js';
+import { getLanguageDirection } from 'dashboard/components/widgets/conversation/advancedFilterItems/languages.js';
 
 export const getHeadingsfromTheArticle = () => {
   const rows = [];
   const articleElement = document.getElementById('cw-article-content');
   articleElement.querySelectorAll('h1, h2, h3').forEach(element => {
-    const slug = slugifyWithCounter(element.innerText);
+    const headingText = element.innerText;
+    const slug = slugifyWithCounter(headingText);
     element.id = slug;
     element.className = 'scroll-mt-24 heading';
-    element.innerHTML += `<a class="permalink text-slate-600 ml-3" href="#${slug}" title="${element.innerText}" data-turbolinks="false">#</a>`;
+
+    const permalink = document.createElement('a');
+    permalink.className = 'permalink text-slate-600 ml-3';
+    permalink.href = `#${slug}`;
+    permalink.title = headingText;
+    permalink.dataset.turbo = 'false';
+    permalink.textContent = '#';
+    element.appendChild(permalink);
     rows.push({
       slug,
-      title: element.innerText,
+      title: headingText,
       tag: element.tagName.toLowerCase(),
     });
   });
@@ -58,32 +68,38 @@ export const openExternalLinksInNewTab = () => {
 
 export const InitializationHelpers = {
   navigateToLocalePage: () => {
-    const allLocaleSwitcher = document.querySelector('.locale-switcher');
+    document.addEventListener('change', e => {
+      const localeSwitcher = e.target.closest('.locale-switcher');
+      if (!localeSwitcher) return;
 
-    if (!allLocaleSwitcher) {
-      return false;
-    }
+      const targetUrl = new URL(localeSwitcher.value, window.location.origin);
+      const isHelpCenterUrl = targetUrl.pathname.startsWith('/hc/');
 
-    const { portalSlug } = allLocaleSwitcher.dataset;
-    allLocaleSwitcher.addEventListener('change', event => {
-      window.location = `/hc/${portalSlug}/${event.target.value}/`;
+      if (targetUrl.origin !== window.location.origin || !isHelpCenterUrl)
+        return;
+
+      window.location.assign(targetUrl.href);
     });
-    return false;
   },
 
   initializeSearch: () => {
-    const isSearchContainerAvailable = document.querySelector('#search-wrap');
-    if (isSearchContainerAvailable) {
+    ['#search-wrap', '#search-wrap-hero'].forEach(selector => {
+      const mountPoint = document.querySelector(selector);
+      if (!mountPoint) return;
+      const size = mountPoint.dataset.size || 'default';
+      const showKbd = !!mountPoint.dataset.kbd;
       // eslint-disable-next-line vue/one-component-per-file
       const app = createApp({
         components: { PublicArticleSearch },
-        template: '<PublicArticleSearch />',
+        data() {
+          return { size, showKbd };
+        },
+        template: '<PublicArticleSearch :size="size" :show-kbd="showKbd" />',
       });
-
       app.use(VueDOMPurifyHTML, domPurifyConfig);
       app.directive('on-clickaway', onClickaway);
-      app.mount('#search-wrap');
-    }
+      app.mount(selector);
+    });
   },
 
   initializeTableOfContents: () => {
@@ -103,6 +119,31 @@ export const InitializationHelpers = {
     }
   },
 
+  initializeSidebarThemeToggle: () => {
+    const mountPoint = document.querySelector('#sidebar-theme-toggle');
+    if (mountPoint) {
+      // eslint-disable-next-line vue/one-component-per-file
+      const app = createApp({
+        components: { SidebarThemeToggle },
+        template: '<sidebar-theme-toggle />',
+      });
+      app.directive('on-clickaway', onClickaway);
+      app.mount('#sidebar-theme-toggle');
+    }
+  },
+
+  initializeDetailsClickAway: () => {
+    document.addEventListener('click', event => {
+      document
+        .querySelectorAll('details[data-close-on-clickaway][open]')
+        .forEach(details => {
+          if (!details.contains(event.target)) {
+            details.removeAttribute('open');
+          }
+        });
+    });
+  },
+
   appendPlainParamToURLs: () => {
     [...document.getElementsByTagName('a')].forEach(aTagElement => {
       if (aTagElement.href && aTagElement.href.includes('/hc/')) {
@@ -114,10 +155,22 @@ export const InitializationHelpers = {
     });
   },
 
+  setDirectionAttribute: () => {
+    const htmlElement = document.querySelector('html');
+    // If direction is already applied through props, do not apply again (iframe case)
+    const hasDirApplied = htmlElement.getAttribute('data-dir-applied');
+    if (!htmlElement || hasDirApplied) return;
+
+    const localeFromHtml = htmlElement.lang;
+    htmlElement.dir =
+      localeFromHtml && getLanguageDirection(localeFromHtml) ? 'rtl' : 'ltr';
+  },
+
   initializeThemesInPortal: initializeTheme,
 
   initialize: () => {
     openExternalLinksInNewTab();
+    InitializationHelpers.setDirectionAttribute();
     if (window.portalConfig.isPlainLayoutEnabled === 'true') {
       InitializationHelpers.appendPlainParamToURLs();
     } else {
@@ -125,6 +178,8 @@ export const InitializationHelpers = {
       InitializationHelpers.navigateToLocalePage();
       InitializationHelpers.initializeSearch();
       InitializationHelpers.initializeTableOfContents();
+      InitializationHelpers.initializeSidebarThemeToggle();
+      InitializationHelpers.initializeDetailsClickAway();
     }
   },
 
@@ -137,7 +192,7 @@ export const InitializationHelpers = {
 
       const a = document.createElement('a');
       a.href = window.location.hash;
-      a['data-turbolinks'] = false;
+      a['data-turbo'] = false;
       a.click();
     }
   },

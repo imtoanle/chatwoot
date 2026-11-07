@@ -21,12 +21,93 @@ RSpec.describe 'Profile API', type: :request do
             as: :json
 
         expect(response).to have_http_status(:success)
+        expect(response).to conform_schema(200)
         json_response = response.parsed_body
         expect(json_response['id']).to eq(agent.id)
         expect(json_response['email']).to eq(agent.email)
         expect(json_response['access_token']).to eq(agent.access_token.token)
         expect(json_response['custom_attributes']['test']).to eq('test')
         expect(json_response['message_signature']).to be_nil
+      end
+
+      it 'returns an empty access token when all accounts have API and webhook access disabled' do
+        account.disable_features!('api_and_webhooks')
+        allow(account).to receive(:api_and_webhooks_enabled?).and_return(false)
+        allow_any_instance_of(User).to receive(:accounts).and_return([account]) # rubocop:disable RSpec/AnyInstance
+
+        get '/api/v1/profile',
+            headers: agent.create_new_auth_token,
+            as: :json
+
+        json_response = response.parsed_body
+        expect(json_response['access_token']).to eq('')
+        expect(json_response['accounts'].first['api_and_webhooks']).to be false
+      end
+
+      it 'returns the access token when any account has API and webhook access enabled' do
+        account.disable_features!('api_and_webhooks')
+        enabled_account = create(:account)
+        enabled_account.enable_features!('api_and_webhooks')
+        create(:account_user, account: enabled_account, user: agent)
+        allow(account).to receive(:api_and_webhooks_enabled?).and_return(false)
+        allow(enabled_account).to receive(:api_and_webhooks_enabled?).and_return(true)
+        allow_any_instance_of(User).to receive(:accounts).and_return([account, enabled_account]) # rubocop:disable RSpec/AnyInstance
+
+        get '/api/v1/profile',
+            headers: agent.create_new_auth_token,
+            as: :json
+
+        json_response = response.parsed_body
+        expect(json_response['access_token']).to eq(agent.access_token.token)
+        expect(json_response['accounts'].find { |item| item['id'] == enabled_account.id }['api_and_webhooks']).to be true
+      end
+
+      it 'returns the access token for self-hosted accounts even when the stored feature flag is disabled' do
+        allow(ChatwootApp).to receive(:chatwoot_cloud?).and_return(false)
+        account.disable_features!('api_and_webhooks')
+
+        get '/api/v1/profile',
+            headers: agent.create_new_auth_token,
+            as: :json
+
+        expect(response.parsed_body['access_token']).to eq(agent.access_token.token)
+      end
+    end
+
+    context 'when the account enforces MFA' do
+      let(:agent) { create(:user, account: account, role: :agent) }
+
+      before do
+        skip('Skipping since MFA is not configured in this environment') unless Chatwoot.encryption_configured?
+        account.update!(enforce_mfa: true)
+      end
+
+      it 'blocks api_access_token requests from non-enrolled users' do
+        get '/api/v1/profile',
+            headers: { api_access_token: agent.access_token.token },
+            as: :json
+
+        expect(response).to have_http_status(:forbidden)
+        expect(response.parsed_body['error_code']).to eq('mfa_enrollment_required')
+      end
+
+      it 'allows enrolled users over api_access_token' do
+        agent.enable_two_factor!
+        agent.update!(otp_required_for_login: true)
+
+        get '/api/v1/profile',
+            headers: { api_access_token: agent.access_token.token },
+            as: :json
+
+        expect(response).to have_http_status(:success)
+      end
+
+      it 'does not gate session-authenticated requests' do
+        get '/api/v1/profile',
+            headers: agent.create_new_auth_token,
+            as: :json
+
+        expect(response).to have_http_status(:success)
       end
     end
   end
@@ -50,6 +131,7 @@ RSpec.describe 'Profile API', type: :request do
             as: :json
 
         expect(response).to have_http_status(:success)
+        expect(response).to conform_schema(200)
         json_response = response.parsed_body
         agent.reload
         expect(json_response['id']).to eq(agent.id)
@@ -64,6 +146,7 @@ RSpec.describe 'Profile API', type: :request do
             as: :json
 
         expect(response).to have_http_status(:success)
+        expect(response).to conform_schema(200)
         agent.reload
 
         expect(agent.custom_attributes['phone_number']).to eq('+123456789')
@@ -91,7 +174,20 @@ RSpec.describe 'Profile API', type: :request do
             as: :json
 
         expect(response).to have_http_status(:success)
+        expect(response).to conform_schema(200)
         expect(agent.reload.valid_password?('Test1234!')).to be true
+      end
+
+      it 'does not reset the display name if updates the password' do
+        display_name = agent.display_name
+
+        put '/api/v1/profile',
+            params: { profile: { current_password: 'Test123!', password: 'Test1234!', password_confirmation: 'Test1234!' } },
+            headers: agent.create_new_auth_token,
+            as: :json
+
+        expect(response).to have_http_status(:success)
+        expect(agent.reload.display_name).to eq(display_name)
       end
 
       it 'throws error when current password provided is invalid' do
@@ -234,6 +330,52 @@ RSpec.describe 'Profile API', type: :request do
     end
   end
 
+  describe 'POST /api/v1/profile/work_preferences' do
+    context 'when it is an unauthenticated user' do
+      it 'returns unauthorized' do
+        post '/api/v1/profile/work_preferences'
+        expect(response).to have_http_status(:unauthorized)
+      end
+    end
+
+    context 'when it is an authenticated user' do
+      let(:agent) { create(:user, password: 'Test123!', account: account, role: :agent) }
+
+      it 'updates the work preferences' do
+        post '/api/v1/profile/work_preferences',
+             params: { profile: { accepts_calls: false, account_id: account.id } },
+             headers: agent.create_new_auth_token,
+             as: :json
+
+        expect(response).to have_http_status(:success)
+        json_response = response.parsed_body
+        expect(json_response['accounts'].first).to include('accepts_conversations' => true, 'accepts_calls' => false)
+      end
+
+      it 'rejects turning off the last preference' do
+        agent.account_users.find_by(account: account).update!(accepts_calls: false)
+
+        post '/api/v1/profile/work_preferences',
+             params: { profile: { accepts_conversations: false, account_id: account.id } },
+             headers: agent.create_new_auth_token,
+             as: :json
+
+        expect(response).to have_http_status(:unprocessable_entity)
+        expect(agent.account_users.find_by(account: account).accepts_conversations).to be(true)
+      end
+
+      it 'rejects a value that is not a boolean' do
+        post '/api/v1/profile/work_preferences',
+             params: { profile: { accepts_calls: 'no', account_id: account.id } },
+             headers: agent.create_new_auth_token,
+             as: :json
+
+        expect(response).to have_http_status(:unprocessable_entity)
+        expect(agent.account_users.find_by(account: account).accepts_calls).to be(true)
+      end
+    end
+  end
+
   describe 'PUT /api/v1/profile/set_active_account' do
     context 'when it is an unauthenticated user' do
       it 'returns unauthorized' do
@@ -293,6 +435,49 @@ RSpec.describe 'Profile API', type: :request do
         end.to have_enqueued_mail(Devise::Mailer, :confirmation_instructions)
 
         expect(response).to have_http_status(:success)
+      end
+    end
+  end
+
+  describe 'POST /api/v1/profile/reset_access_token' do
+    context 'when it is an unauthenticated user' do
+      it 'returns unauthorized' do
+        post '/api/v1/profile/reset_access_token'
+
+        expect(response).to have_http_status(:unauthorized)
+      end
+    end
+
+    context 'when it is an authenticated user' do
+      let(:agent) { create(:user, account: account, role: :agent) }
+
+      it 'regenerates the access token' do
+        old_token = agent.access_token.token
+
+        post '/api/v1/profile/reset_access_token',
+             headers: agent.create_new_auth_token,
+             as: :json
+
+        expect(response).to have_http_status(:success)
+        agent.reload
+        expect(agent.access_token.token).not_to eq(old_token)
+        json_response = response.parsed_body
+        expect(json_response['access_token']).to eq(agent.access_token.token)
+      end
+
+      it 'regenerates the stored token but returns an empty token when no account has API and webhook access enabled' do
+        account.disable_features!('api_and_webhooks')
+        allow(account).to receive(:api_and_webhooks_enabled?).and_return(false)
+        allow_any_instance_of(User).to receive(:accounts).and_return([account]) # rubocop:disable RSpec/AnyInstance
+        old_token = agent.access_token.token
+
+        post '/api/v1/profile/reset_access_token',
+             headers: agent.create_new_auth_token,
+             as: :json
+
+        expect(response).to have_http_status(:success)
+        expect(agent.reload.access_token.token).not_to eq(old_token)
+        expect(response.parsed_body['access_token']).to eq('')
       end
     end
   end

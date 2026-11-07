@@ -56,12 +56,17 @@ Rails.application.configure do
   # Raises error for missing translations.
   # config.action_view.raise_on_missing_translations = true
 
-  # Use an evented file watcher to asynchronously detect changes in source code,
-  # routes, locales, etc. This feature depends on the listen gem.
-  config.file_watcher = ActiveSupport::EventedFileUpdateChecker
-
   # Disable host check during development
   config.hosts = nil
+  
+  # GitHub Codespaces configuration
+  if ENV['CODESPACES']
+    # Allow web console access from any IP
+    config.web_console.allowed_ips = %w(0.0.0.0/0 ::/0)
+    # Allow CSRF from codespace URLs
+    config.force_ssl = false
+    config.action_controller.forgery_protection_origin_check = false
+  end
 
   # customize using the environment variables
   config.log_level = ENV.fetch('LOG_LEVEL', 'debug').to_sym

@@ -19,6 +19,9 @@ const endPoints = {
   autoOffline: {
     url: '/api/v1/profile/auto_offline',
   },
+  workPreferences: {
+    url: '/api/v1/profile/work_preferences',
+  },
   logout: {
     url: 'auth/sign_out',
   },
@@ -50,6 +53,10 @@ const endPoints = {
 
   resendConfirmation: {
     url: '/api/v1/profile/resend_confirmation',
+  },
+
+  resetAccessToken: {
+    url: '/api/v1/profile/reset_access_token',
   },
 };
 

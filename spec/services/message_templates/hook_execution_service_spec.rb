@@ -15,7 +15,7 @@ describe MessageTemplates::HookExecutionService do
       allow(MessageTemplates::Template::Greeting).to receive(:new)
 
       # described class gets called in message after commit
-      create(:message, conversation: conversation, message_type: 'activity', content: 'Conversation marked resolved!!')
+      create(:message, conversation: conversation, account: conversation.account, message_type: 'activity', content: 'Conversation marked resolved!!')
 
       expect(MessageTemplates::Template::Greeting).not_to have_received(:new)
       expect(MessageTemplates::Template::EmailCollect).not_to have_received(:new)
@@ -36,7 +36,7 @@ describe MessageTemplates::HookExecutionService do
       allow(MessageTemplates::Template::Greeting).to receive(:new)
 
       # described class gets called in message after commit
-      message = create(:message, conversation: conversation)
+      message = create(:message, conversation: conversation, account: conversation.account)
 
       expect(MessageTemplates::Template::Greeting).not_to have_received(:new)
       expect(MessageTemplates::Template::EmailCollect).to have_received(:new).with(conversation: message.conversation)
@@ -54,7 +54,7 @@ describe MessageTemplates::HookExecutionService do
       allow(MessageTemplates::Template::Greeting).to receive(:new).and_return(greeting_service)
       allow(greeting_service).to receive(:perform).and_return(true)
 
-      message = create(:message, conversation: conversation)
+      message = create(:message, conversation: conversation, account: conversation.account)
       expect(MessageTemplates::Template::Greeting).not_to have_received(:new).with(conversation: message.conversation)
     end
   end
@@ -75,7 +75,7 @@ describe MessageTemplates::HookExecutionService do
       allow(greeting_service).to receive(:perform).and_return(true)
 
       # described class gets called in message after commit
-      message = create(:message, conversation: conversation)
+      message = create(:message, conversation: conversation, account: conversation.account)
 
       expect(MessageTemplates::Template::Greeting).to have_received(:new).with(conversation: message.conversation)
       expect(greeting_service).to have_received(:perform)
@@ -90,7 +90,7 @@ describe MessageTemplates::HookExecutionService do
       allow(MessageTemplates::Template::EmailCollect).to receive(:new).and_return(true)
 
       # described class gets called in message after commit
-      message = create(:message, conversation: conversation)
+      message = create(:message, conversation: conversation, account: conversation.account)
 
       expect(MessageTemplates::Template::EmailCollect).not_to have_received(:new).with(conversation: message.conversation)
     end
@@ -105,99 +105,72 @@ describe MessageTemplates::HookExecutionService do
       allow(MessageTemplates::Template::EmailCollect).to receive(:new).and_return(true)
 
       # described class gets called in message after commit
-      message = create(:message, conversation: conversation)
+      message = create(:message, conversation: conversation, account: conversation.account)
 
       expect(MessageTemplates::Template::EmailCollect).not_to have_received(:new).with(conversation: message.conversation)
     end
   end
 
-  context 'when CSAT Survey' do
-    let(:csat_survey) { double }
-    let(:conversation) { create(:conversation) }
+  context 'when conversation has a campaign' do
+    let(:campaign) { create(:campaign) }
 
-    before do
-      allow(MessageTemplates::Template::CsatSurvey).to receive(:new).and_return(csat_survey)
-      allow(csat_survey).to receive(:perform).and_return(true)
-      create(:message, conversation: conversation, message_type: 'incoming')
+    it 'does not call ::MessageTemplates::Template::Greeting on campaign conversations' do
+      contact = create(:contact, email: nil)
+      conversation = create(:conversation, contact: contact, campaign: campaign)
+      conversation.inbox.update(greeting_enabled: true, greeting_message: 'Hi, this is a greeting message', enable_email_collect: false)
+
+      greeting_service = double
+      allow(MessageTemplates::Template::Greeting).to receive(:new).and_return(greeting_service)
+      allow(greeting_service).to receive(:perform).and_return(true)
+
+      create(:message, conversation: conversation, account: conversation.account)
+
+      expect(MessageTemplates::Template::Greeting).not_to have_received(:new)
     end
 
-    it 'calls ::MessageTemplates::Template::CsatSurvey when a conversation is resolved in an inbox with survey enabled and can reply' do
-      conversation.inbox.update(csat_survey_enabled: true)
-      allow(conversation).to receive(:can_reply?).and_return(true)
+    it 'does not call ::MessageTemplates::Template::OutOfOffice on campaign conversations' do
+      contact = create(:contact)
+      conversation = create(:conversation, contact: contact, campaign: campaign)
 
-      conversation.resolved!
-      Conversations::ActivityMessageJob.perform_now(conversation,
-                                                    { account_id: conversation.account_id, inbox_id: conversation.inbox_id, message_type: :activity,
-                                                      content: 'Conversation marked resolved!!' })
+      conversation.inbox.update(working_hours_enabled: true, out_of_office_message: 'We are out of office')
+      conversation.inbox.working_hours.today.update!(closed_all_day: true)
 
-      expect(MessageTemplates::Template::CsatSurvey).to have_received(:new).with(conversation: conversation)
-      expect(csat_survey).to have_received(:perform)
+      out_of_office_service = double
+      allow(MessageTemplates::Template::OutOfOffice).to receive(:new).and_return(out_of_office_service)
+      allow(out_of_office_service).to receive(:perform).and_return(true)
+
+      create(:message, conversation: conversation, account: conversation.account)
+
+      expect(MessageTemplates::Template::OutOfOffice).not_to have_received(:new)
     end
+  end
 
-    it 'will not call ::MessageTemplates::Template::CsatSurvey when Csat is not enabled' do
-      conversation.inbox.update(csat_survey_enabled: false)
+  context 'when message is an auto reply email' do
+    it 'does not call any template hooks' do
+      contact = create(:contact)
+      conversation = create(:conversation, contact: contact)
+      conversation.inbox.update(greeting_enabled: true, enable_email_collect: true, greeting_message: 'Hi, this is a greeting message')
 
-      conversation.resolved!
-      Conversations::ActivityMessageJob.perform_now(conversation,
-                                                    { account_id: conversation.account_id, inbox_id: conversation.inbox_id, message_type: :activity,
-                                                      content: 'Conversation marked resolved!!' })
+      message = create(:message, conversation: conversation, account: conversation.account, content_type: :incoming_email)
+      message.content_attributes = { email: { auto_reply: true } }
+      message.save!
 
-      expect(MessageTemplates::Template::CsatSurvey).not_to have_received(:new).with(conversation: conversation)
-      expect(csat_survey).not_to have_received(:perform)
-    end
+      greeting_service = double
+      email_collect_service = double
+      out_of_office_service = double
 
-    it 'will not call ::MessageTemplates::Template::CsatSurvey if its a tweet conversation' do
-      twitter_channel = create(:channel_twitter_profile)
-      twitter_inbox = create(:inbox, channel: twitter_channel)
-      conversation = create(:conversation, inbox: twitter_inbox, additional_attributes: { type: 'tweet' })
-      conversation.inbox.update(csat_survey_enabled: true)
+      allow(MessageTemplates::Template::Greeting).to receive(:new).and_return(greeting_service)
+      allow(greeting_service).to receive(:perform).and_return(true)
+      allow(MessageTemplates::Template::EmailCollect).to receive(:new).and_return(email_collect_service)
+      allow(email_collect_service).to receive(:perform).and_return(true)
+      allow(MessageTemplates::Template::OutOfOffice).to receive(:new).and_return(out_of_office_service)
+      allow(out_of_office_service).to receive(:perform).and_return(true)
 
-      conversation.resolved!
-      Conversations::ActivityMessageJob.perform_now(conversation,
-                                                    { account_id: conversation.account_id, inbox_id: conversation.inbox_id, message_type: :activity,
-                                                      content: 'Conversation marked resolved!!' })
+      described_class.new(message: message).perform
 
-      expect(MessageTemplates::Template::CsatSurvey).not_to have_received(:new).with(conversation: conversation)
-      expect(csat_survey).not_to have_received(:perform)
-    end
-
-    it 'will not call ::MessageTemplates::Template::CsatSurvey if another Csat was already sent' do
-      conversation.inbox.update(csat_survey_enabled: true)
-      conversation.messages.create!(message_type: 'outgoing', content_type: :input_csat, account: conversation.account, inbox: conversation.inbox)
-
-      conversation.resolved!
-      Conversations::ActivityMessageJob.perform_now(conversation,
-                                                    { account_id: conversation.account_id, inbox_id: conversation.inbox_id, message_type: :activity,
-                                                      content: 'Conversation marked resolved!!' })
-
-      expect(MessageTemplates::Template::CsatSurvey).not_to have_received(:new).with(conversation: conversation)
-      expect(csat_survey).not_to have_received(:perform)
-    end
-
-    it 'will not call ::MessageTemplates::Template::CsatSurvey if cannot reply' do
-      conversation.inbox.update(csat_survey_enabled: true)
-      allow(conversation).to receive(:can_reply?).and_return(false)
-
-      conversation.resolved!
-      Conversations::ActivityMessageJob.perform_now(conversation,
-                                                    { account_id: conversation.account_id, inbox_id: conversation.inbox_id, message_type: :activity,
-                                                      content: 'Conversation marked resolved!!' })
-
-      expect(MessageTemplates::Template::CsatSurvey).not_to have_received(:new).with(conversation: conversation)
-      expect(csat_survey).not_to have_received(:perform)
-    end
-
-    it 'creates activity message when CSAT not sent due to messaging window restriction' do
-      conversation.inbox.update(csat_survey_enabled: true)
-      allow(conversation).to receive(:can_reply?).and_return(false)
-      allow(conversation).to receive(:create_csat_not_sent_activity_message)
-
-      conversation.resolved!
-      Conversations::ActivityMessageJob.perform_now(conversation,
-                                                    { account_id: conversation.account_id, inbox_id: conversation.inbox_id, message_type: :activity,
-                                                      content: 'Conversation marked resolved!!' })
-
-      expect(conversation).to have_received(:create_csat_not_sent_activity_message)
+      expect(MessageTemplates::Template::Greeting).not_to have_received(:new)
+      expect(MessageTemplates::Template::EmailCollect).not_to have_received(:new)
+      expect(MessageTemplates::Template::OutOfOffice).not_to have_received(:new)
     end
   end
 
@@ -215,7 +188,7 @@ describe MessageTemplates::HookExecutionService do
       allow(out_of_office_service).to receive(:perform).and_return(true)
 
       # described class gets called in message after commit
-      message = create(:message, conversation: conversation)
+      message = create(:message, conversation: conversation, account: conversation.account)
 
       expect(MessageTemplates::Template::OutOfOffice).to have_received(:new).with(conversation: message.conversation)
       expect(out_of_office_service).to have_received(:perform)
@@ -229,13 +202,13 @@ describe MessageTemplates::HookExecutionService do
         conversation.inbox.update(working_hours_enabled: true, out_of_office_message: 'We are out of office')
         conversation.inbox.working_hours.today.update!(closed_all_day: true)
 
-        create(:message, conversation: conversation, message_type: :outgoing, created_at: 2.minutes.ago)
+        create(:message, conversation: conversation, account: conversation.account, message_type: :outgoing, created_at: 2.minutes.ago)
 
         out_of_office_service = double
         allow(MessageTemplates::Template::OutOfOffice).to receive(:new).and_return(out_of_office_service)
         allow(out_of_office_service).to receive(:perform).and_return(true)
 
-        create(:message, conversation: conversation)
+        create(:message, conversation: conversation, account: conversation.account)
 
         expect(MessageTemplates::Template::OutOfOffice).not_to have_received(:new)
         expect(out_of_office_service).not_to have_received(:perform)
@@ -248,13 +221,13 @@ describe MessageTemplates::HookExecutionService do
         conversation.inbox.update(working_hours_enabled: true, out_of_office_message: 'We are out of office')
         conversation.inbox.working_hours.today.update!(closed_all_day: true)
 
-        create(:message, conversation: conversation, private: true, message_type: :outgoing, created_at: 2.minutes.ago)
+        create(:message, conversation: conversation, account: conversation.account, private: true, message_type: :outgoing, created_at: 2.minutes.ago)
 
         out_of_office_service = double
         allow(MessageTemplates::Template::OutOfOffice).to receive(:new).and_return(out_of_office_service)
         allow(out_of_office_service).to receive(:perform).and_return(true)
 
-        create(:message, conversation: conversation)
+        create(:message, conversation: conversation, account: conversation.account)
 
         expect(MessageTemplates::Template::OutOfOffice).to have_received(:new).with(conversation: conversation)
         expect(out_of_office_service).to have_received(:perform)
@@ -274,7 +247,7 @@ describe MessageTemplates::HookExecutionService do
       allow(out_of_office_service).to receive(:perform).and_return(true)
 
       # described class gets called in message after commit
-      message = create(:message, conversation: conversation, message_type: 'outgoing')
+      message = create(:message, conversation: conversation, account: conversation.account, message_type: 'outgoing')
 
       expect(MessageTemplates::Template::OutOfOffice).not_to have_received(:new).with(conversation: message.conversation)
       expect(out_of_office_service).not_to have_received(:perform)
@@ -292,9 +265,58 @@ describe MessageTemplates::HookExecutionService do
       allow(MessageTemplates::Template::OutOfOffice).to receive(:new).and_return(out_of_office_service)
       allow(out_of_office_service).to receive(:perform).and_return(false)
 
-      message = create(:message, conversation: conversation)
+      message = create(:message, conversation: conversation, account: conversation.account)
       expect(MessageTemplates::Template::OutOfOffice).not_to have_received(:new).with(conversation: message.conversation)
       expect(out_of_office_service).not_to receive(:perform)
+    end
+  end
+
+  context 'when an activity message is created on a conversation with a prior incoming message' do
+    it 'does not call ::MessageTemplates::Template::Greeting' do
+      contact = create(:contact, email: nil)
+      conversation = create(:conversation, contact: contact)
+      # Disable email collect so no template messages are created when the incoming message arrives
+      conversation.inbox.update(enable_email_collect: false)
+
+      create(:message, conversation: conversation, account: conversation.account, message_type: :incoming)
+
+      # Greeting is enabled after the incoming message exists, simulating a conversation that has not received a greeting yet
+      conversation.inbox.update(greeting_enabled: true, greeting_message: 'Hi, this is a greeting message')
+
+      greeting_service = double
+      allow(MessageTemplates::Template::Greeting).to receive(:new).and_return(greeting_service)
+      allow(greeting_service).to receive(:perform).and_return(true)
+
+      # Activity message — e.g. resolve, assignee change, label added
+      activity_message = create(:message, conversation: conversation, account: conversation.account,
+                                          message_type: 'activity', content: 'Conversation marked resolved!!')
+
+      described_class.new(message: activity_message).perform
+
+      expect(MessageTemplates::Template::Greeting).not_to have_received(:new)
+    end
+
+    it 'does not call ::MessageTemplates::Template::Greeting on outgoing messages' do
+      contact = create(:contact, email: nil)
+      conversation = create(:conversation, contact: contact)
+      # Disable email collect so no template messages are created when the incoming message arrives
+      conversation.inbox.update(enable_email_collect: false)
+
+      create(:message, conversation: conversation, account: conversation.account, message_type: :incoming)
+
+      # Greeting is enabled after the incoming message exists, simulating a conversation that has not received a greeting yet
+      conversation.inbox.update(greeting_enabled: true, greeting_message: 'Hi, this is a greeting message')
+
+      greeting_service = double
+      allow(MessageTemplates::Template::Greeting).to receive(:new).and_return(greeting_service)
+      allow(greeting_service).to receive(:perform).and_return(true)
+
+      outgoing_message = create(:message, conversation: conversation, account: conversation.account,
+                                          message_type: :outgoing)
+
+      described_class.new(message: outgoing_message).perform
+
+      expect(MessageTemplates::Template::Greeting).not_to have_received(:new)
     end
   end
 end

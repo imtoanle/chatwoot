@@ -1,5 +1,10 @@
 class Api::V1::ProfilesController < Api::BaseController
+  include MfaEnforcementGuard
+
   before_action :set_user
+  # show leaks pubsub_token, which grants realtime access; the rest of the
+  # profile surface is equally off-limits to a token that MFA enforcement blocks.
+  before_action :check_user_mfa_enforcement, if: :authenticate_by_access_token?
 
   def show; end
 
@@ -28,6 +33,15 @@ class Api::V1::ProfilesController < Api::BaseController
     @user.account_users.find_by!(account_id: availability_params[:account_id]).update!(availability: availability_params[:availability])
   end
 
+  def work_preferences
+    preferences = work_preferences_params.except(:account_id)
+    unless preferences.values.all? { |value| [true, false].include?(value) }
+      return render_could_not_create_error(I18n.t('errors.account_user.invalid_work_preference'))
+    end
+
+    @user.account_users.find_by!(account_id: work_preferences_params[:account_id]).update!(preferences)
+  end
+
   def set_active_account
     @user.account_users.find_by(account_id: profile_params[:account_id]).update(active_at: Time.now.utc)
     head :ok
@@ -36,6 +50,11 @@ class Api::V1::ProfilesController < Api::BaseController
   def resend_confirmation
     @user.send_confirmation_instructions unless @user.confirmed?
     head :ok
+  end
+
+  def reset_access_token
+    @user.access_token.regenerate_token
+    @user.reload
   end
 
   private
@@ -50,6 +69,10 @@ class Api::V1::ProfilesController < Api::BaseController
 
   def auto_offline_params
     params.require(:profile).permit(:account_id, :auto_offline)
+  end
+
+  def work_preferences_params
+    params.require(:profile).permit(:account_id, :accepts_conversations, :accepts_calls)
   end
 
   def profile_params

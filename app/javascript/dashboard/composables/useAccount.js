@@ -15,6 +15,12 @@ export function useAccount() {
   const store = useStore();
   const getAccountFn = useMapGetter('accounts/getAccount');
   const isOnChatwootCloud = useMapGetter('globalConfig/isOnChatwootCloud');
+  const isMetaInboxCreationDisabled = useMapGetter(
+    'globalConfig/isMetaInboxCreationDisabled'
+  );
+  const isMetaMessageSendingDisabled = useMapGetter(
+    'globalConfig/isMetaMessageSendingDisabled'
+  );
   const isFeatureEnabledonAccount = useMapGetter(
     'accounts/isFeatureEnabledonAccount'
   );
@@ -45,10 +51,15 @@ export function useAccount() {
     };
   };
 
-  const updateAccount = async data => {
+  const updateAccount = async (data, options) => {
     await store.dispatch('accounts/update', {
       ...data,
+      options,
     });
+  };
+
+  const finishOnboarding = async data => {
+    await store.dispatch('accounts/finishOnboarding', data);
   };
 
   return {
@@ -59,6 +70,9 @@ export function useAccount() {
     accountScopedRoute,
     isCloudFeatureEnabled,
     isOnChatwootCloud,
+    isMetaInboxCreationDisabled,
+    isMetaMessageSendingDisabled,
     updateAccount,
+    finishOnboarding,
   };
 }

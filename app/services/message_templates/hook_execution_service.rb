@@ -2,8 +2,10 @@ class MessageTemplates::HookExecutionService
   pattr_initialize [:message!]
 
   def perform
-    return if conversation.campaign.present?
     return if conversation.last_incoming_message.blank?
+    return if message.auto_reply_email?
+    # A call is not a chat message; greetings, out-of-office and bot replies would reach the caller as SMS.
+    return if message.voice_call?
 
     trigger_templates
   end
@@ -17,10 +19,10 @@ class MessageTemplates::HookExecutionService
     ::MessageTemplates::Template::OutOfOffice.new(conversation: conversation).perform if should_send_out_of_office_message?
     ::MessageTemplates::Template::Greeting.new(conversation: conversation).perform if should_send_greeting?
     ::MessageTemplates::Template::EmailCollect.new(conversation: conversation).perform if inbox.enable_email_collect && should_send_email_collect?
-    handle_csat_survey
   end
 
   def should_send_out_of_office_message?
+    return false if conversation.campaign.present?
     # should not send if its a tweet message
     return false if conversation.tweet?
     # should not send for outbound messages
@@ -37,8 +39,11 @@ class MessageTemplates::HookExecutionService
   end
 
   def should_send_greeting?
+    return false if conversation.campaign.present?
     # should not send if its a tweet message
     return false if conversation.tweet?
+    # should not send for outbound messages
+    return false unless message.incoming?
 
     first_message_from_contact? && inbox.greeting_enabled? && inbox.greeting_message.present?
   end
@@ -49,42 +54,15 @@ class MessageTemplates::HookExecutionService
 
   # TODO: we should be able to reduce this logic once we have a toggle for email collect messages
   def should_send_email_collect?
+    return false if conversation.campaign.present?
+    # Only react to a contact's incoming message, not to the template messages this hook creates.
+    return false unless message.incoming?
+
     !contact_has_email? && inbox.web_widget? && !email_collect_was_sent?
   end
 
   def contact_has_email?
     contact.email
-  end
-
-  def csat_enabled_conversation?
-    return false unless conversation.resolved?
-    # should not sent since the link will be public
-    return false if conversation.tweet?
-    return false unless inbox.csat_survey_enabled?
-
-    true
-  end
-
-  def handle_csat_survey
-    return unless csat_enabled_conversation?
-    # only send CSAT once in a conversation
-    return if csat_already_sent?
-
-    # Only send CSAT if agent can still reply by checking the messaging window restriction
-    # https://www.chatwoot.com/docs/self-hosted/supported-features#outgoing-message-restriction
-    if within_messaging_window?
-      ::MessageTemplates::Template::CsatSurvey.new(conversation: conversation).perform
-    else
-      conversation.create_csat_not_sent_activity_message
-    end
-  end
-
-  def csat_already_sent?
-    conversation.messages.where(content_type: :input_csat).present?
-  end
-
-  def within_messaging_window?
-    conversation.can_reply?
   end
 end
 MessageTemplates::HookExecutionService.prepend_mod_with('MessageTemplates::HookExecutionService')

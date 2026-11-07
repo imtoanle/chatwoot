@@ -140,6 +140,73 @@ describe('#actions', () => {
     });
   });
 
+  describe('#updateWorkPreferences', () => {
+    const getters = {
+      getCurrentUserAcceptsConversations: true,
+      getCurrentUserAcceptsCalls: true,
+    };
+
+    it('sends correct actions if API is success', async () => {
+      axios.post.mockResolvedValue({
+        data: {
+          id: 1,
+          name: 'John',
+          accounts: [{ id: 1, accepts_calls: false }],
+        },
+      });
+      await actions.updateWorkPreferences(
+        { commit, getters },
+        { accountId: 1, accepts_calls: false }
+      );
+      expect(commit.mock.calls).toEqual([
+        [types.SET_CURRENT_USER_WORK_PREFERENCES, { accepts_calls: false }],
+        [
+          types.SET_CURRENT_USER,
+          {
+            id: 1,
+            name: 'John',
+            accounts: [{ id: 1, accepts_calls: false }],
+          },
+        ],
+      ]);
+    });
+
+    it('restores the previous preferences if API is failure', async () => {
+      axios.post.mockRejectedValue({ error: 'Authentication Failure' });
+      await actions.updateWorkPreferences(
+        { commit, getters },
+        { accountId: 1, accepts_calls: false }
+      );
+      expect(commit.mock.calls).toEqual([
+        [types.SET_CURRENT_USER_WORK_PREFERENCES, { accepts_calls: false }],
+        [
+          types.SET_CURRENT_USER_WORK_PREFERENCES,
+          { accepts_conversations: true, accepts_calls: true },
+        ],
+      ]);
+    });
+  });
+
+  describe('#setCurrentUserWorkPreferences', () => {
+    it('commits the preferences', () => {
+      actions.setCurrentUserWorkPreferences(
+        { commit },
+        { accepts_conversations: false, accepts_calls: true }
+      );
+      expect(commit.mock.calls).toEqual([
+        [
+          types.SET_CURRENT_USER_WORK_PREFERENCES,
+          { accepts_conversations: false, accepts_calls: true },
+        ],
+      ]);
+    });
+
+    it('does nothing without preferences', () => {
+      actions.setCurrentUserWorkPreferences({ commit }, undefined);
+      expect(commit).not.toHaveBeenCalled();
+    });
+  });
+
   describe('#updateUISettings', () => {
     it('sends correct actions if API is success', async () => {
       axios.put.mockResolvedValue({
@@ -226,6 +293,22 @@ describe('#actions', () => {
         },
         { accountId: 1 }
       );
+    });
+  });
+
+  describe('#resetAccessToken', () => {
+    it('sends correct actions if API is success', async () => {
+      const mockResponse = {
+        data: { id: 1, name: 'John', access_token: 'new_token_123' },
+        headers: { expiry: 581842904 },
+      };
+      axios.post.mockResolvedValue(mockResponse);
+      const result = await actions.resetAccessToken({ commit });
+
+      expect(commit.mock.calls).toEqual([
+        [types.SET_CURRENT_USER, mockResponse.data],
+      ]);
+      expect(result).toBe(true);
     });
   });
 });

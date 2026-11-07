@@ -16,6 +16,9 @@ on:
 env:
   DOCKER_REPO: aitbase/chatwoot
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: self-hosted

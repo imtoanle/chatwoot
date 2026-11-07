@@ -3,17 +3,20 @@ import { useVuelidate } from '@vuelidate/core';
 import { required, minLength } from '@vuelidate/validators';
 import { useAlert } from 'dashboard/composables';
 import FormInput from '../../../components/Form/Input.vue';
-import SubmitButton from '../../../components/Button/SubmitButton.vue';
+import NextButton from 'dashboard/components-next/button/Button.vue';
 import { DEFAULT_REDIRECT_URL } from 'dashboard/constants/globals';
 import { setNewPassword } from '../../../api/auth';
+import { getLoginRedirectURL, getMfaSignInURL } from 'v3/helpers/AuthHelper';
 
 export default {
   components: {
     FormInput,
-    SubmitButton,
+    NextButton,
   },
   props: {
     resetPasswordToken: { type: String, default: '' },
+    redirectUrl: { type: String, default: '' },
+    ssoAccountId: { type: String, default: '' },
   },
   setup() {
     return { v$: useVuelidate() };
@@ -72,8 +75,21 @@ export default {
         resetPasswordToken: this.resetPasswordToken,
       };
       setNewPassword(credentials)
-        .then(() => {
-          window.location = DEFAULT_REDIRECT_URL;
+        .then(user => {
+          window.location =
+            (user?.redirectUrl &&
+              getMfaSignInURL({
+                loginUrl: user.redirectUrl,
+                redirectUrl: this.redirectUrl,
+                ssoAccountId: this.ssoAccountId,
+              })) ||
+            (this.redirectUrl
+              ? getLoginRedirectURL({
+                  redirectUrl: this.redirectUrl,
+                  ssoAccountId: this.ssoAccountId,
+                  user,
+                })
+              : DEFAULT_REDIRECT_URL);
         })
         .catch(error => {
           this.showAlertMessage(
@@ -120,14 +136,18 @@ export default {
           :placeholder="$t('SET_NEW_PASSWORD.CONFIRM_PASSWORD.PLACEHOLDER')"
           @blur="v$.credentials.confirmPassword.$touch"
         />
-        <SubmitButton
+        <NextButton
+          lg
+          type="submit"
+          data-testid="submit_button"
+          class="w-full"
+          :label="$t('SET_NEW_PASSWORD.SUBMIT')"
           :disabled="
             v$.credentials.password.$invalid ||
             v$.credentials.confirmPassword.$invalid ||
             newPasswordAPI.showLoading
           "
-          :button-text="$t('SET_NEW_PASSWORD.SUBMIT')"
-          :loading="newPasswordAPI.showLoading"
+          :is-loading="newPasswordAPI.showLoading"
         />
       </div>
     </form>

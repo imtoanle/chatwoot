@@ -52,6 +52,21 @@ export const getters = {
     return currentAccount.auto_offline;
   },
 
+  getCurrentUserAcceptsConversations(_, $getters) {
+    return $getters.getCurrentAccount.accepts_conversations;
+  },
+
+  getCurrentUserAcceptsCalls(_, $getters) {
+    return $getters.getCurrentAccount.accepts_calls;
+  },
+
+  getCurrentUserReceivesCalls($state, $getters) {
+    return (
+      $getters.getCurrentUserAvailability === 'online' &&
+      $getters.getCurrentUserAcceptsCalls
+    );
+  },
+
   getCurrentAccountId(_, __, rootState) {
     if (rootState.route.params && rootState.route.params.accountId) {
       return Number(rootState.route.params.accountId);
@@ -135,6 +150,16 @@ export const actions = {
     }
   },
 
+  updatePassword: async ({ commit }, params) => {
+    // eslint-disable-next-line no-useless-catch
+    try {
+      const response = await authAPI.profilePasswordUpdate(params);
+      commit(types.SET_CURRENT_USER, response.data);
+    } catch (error) {
+      throw error;
+    }
+  },
+
   deleteAvatar: async ({ commit }) => {
     try {
       const response = await authAPI.deleteAvatar();
@@ -199,9 +224,36 @@ export const actions = {
     }
   },
 
+  updateWorkPreferences: async (
+    { commit, getters: _getters },
+    { accountId, ...preferences }
+  ) => {
+    const previousPreferences = {
+      accepts_conversations: _getters.getCurrentUserAcceptsConversations,
+      accepts_calls: _getters.getCurrentUserAcceptsCalls,
+    };
+
+    try {
+      commit(types.SET_CURRENT_USER_WORK_PREFERENCES, preferences);
+      const response = await authAPI.updateWorkPreferences(
+        accountId,
+        preferences
+      );
+      commit(types.SET_CURRENT_USER, response.data);
+    } catch (error) {
+      commit(types.SET_CURRENT_USER_WORK_PREFERENCES, previousPreferences);
+    }
+  },
+
   setCurrentUserAvailability({ commit, state: $state }, data) {
     if (data[$state.currentUser.id]) {
       commit(types.SET_CURRENT_USER_AVAILABILITY, data[$state.currentUser.id]);
+    }
+  },
+
+  setCurrentUserWorkPreferences({ commit }, preferences) {
+    if (preferences) {
+      commit(types.SET_CURRENT_USER_WORK_PREFERENCES, preferences);
     }
   },
 
@@ -210,6 +262,16 @@ export const actions = {
       await authAPI.setActiveAccount({ accountId });
     } catch (error) {
       // Ignore error
+    }
+  },
+
+  resetAccessToken: async ({ commit }) => {
+    try {
+      const response = await authAPI.resetAccessToken();
+      commit(types.SET_CURRENT_USER, response.data);
+      return true;
+    } catch (error) {
+      return false;
     }
   },
 
@@ -240,6 +302,33 @@ export const mutations = {
     const accounts = _state.currentUser.accounts.map(account => {
       if (account.id === _state.currentUser.account_id) {
         return { ...account, autoOffline: autoOffline };
+      }
+      return account;
+    });
+
+    _state.currentUser = {
+      ..._state.currentUser,
+      accounts,
+    };
+  },
+  [types.SET_CURRENT_USER_WORK_PREFERENCES](_state, preferences) {
+    const accounts = _state.currentUser.accounts.map(account => {
+      if (account.id === _state.currentUser.account_id) {
+        return { ...account, ...preferences };
+      }
+      return account;
+    });
+
+    _state.currentUser = {
+      ..._state.currentUser,
+      accounts,
+    };
+  },
+  [types.RESET_ONBOARDING](_state, accountId) {
+    const accounts = _state.currentUser.accounts.map(account => {
+      if (account.id === accountId) {
+        const { onboarding_step, ...rest } = account;
+        return rest;
       }
       return account;
     });

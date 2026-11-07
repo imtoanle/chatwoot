@@ -15,7 +15,7 @@ RSpec.describe 'Agent Bot API', type: :request do
       end
     end
 
-    context 'when it is an authenticated user' do
+    context 'when it is an authenticated agent' do
       it 'returns all the agent_bots in account along with global agent bots' do
         global_bot = create(:agent_bot)
         get "/api/v1/accounts/#{account.id}/agent_bots",
@@ -25,7 +25,7 @@ RSpec.describe 'Agent Bot API', type: :request do
         expect(response).to have_http_status(:success)
         expect(response.body).to include(agent_bot.name)
         expect(response.body).to include(global_bot.name)
-        expect(response.body).to include(agent_bot.access_token.token)
+        expect(response.body).not_to include(agent_bot.access_token.token)
         expect(response.body).not_to include(global_bot.access_token.token)
       end
 
@@ -54,6 +54,25 @@ RSpec.describe 'Agent Bot API', type: :request do
         expect(account_bot_response).to include('thumbnail')
       end
     end
+
+    context 'when it is an authenticated administrator' do
+      it 'returns the account bot access token' do
+        get "/api/v1/accounts/#{account.id}/agent_bots",
+            headers: admin.create_new_auth_token,
+            as: :json
+
+        expect(response).to have_http_status(:success)
+        expect(response.body).to include(agent_bot.access_token.token)
+      end
+
+      it 'supports API token authentication' do
+        get "/api/v1/accounts/#{account.id}/agent_bots",
+            headers: { api_access_token: admin.access_token.token },
+            as: :json
+
+        expect(response).to have_http_status(:success)
+      end
+    end
   end
 
   describe 'GET /api/v1/accounts/{account.id}/agent_bots/:id' do
@@ -65,7 +84,7 @@ RSpec.describe 'Agent Bot API', type: :request do
       end
     end
 
-    context 'when it is an authenticated user' do
+    context 'when it is an authenticated agent' do
       it 'shows the agent bot' do
         get "/api/v1/accounts/#{account.id}/agent_bots/#{agent_bot.id}",
             headers: agent.create_new_auth_token,
@@ -73,7 +92,7 @@ RSpec.describe 'Agent Bot API', type: :request do
 
         expect(response).to have_http_status(:success)
         expect(response.body).to include(agent_bot.name)
-        expect(response.body).to include(agent_bot.access_token.token)
+        expect(response.body).not_to include(agent_bot.access_token.token)
       end
 
       it 'will show a global agent bot' do
@@ -89,6 +108,17 @@ RSpec.describe 'Agent Bot API', type: :request do
         # Test for system_bot attribute and webhook URL not being exposed
         expect(response.parsed_body['system_bot']).to be(true)
         expect(response.parsed_body).not_to include('outgoing_url')
+      end
+    end
+
+    context 'when it is an authenticated administrator' do
+      it 'returns the account bot access token' do
+        get "/api/v1/accounts/#{account.id}/agent_bots/#{agent_bot.id}",
+            headers: admin.create_new_auth_token,
+            as: :json
+
+        expect(response).to have_http_status(:success)
+        expect(response.body).to include(agent_bot.access_token.token)
       end
     end
   end
@@ -259,6 +289,57 @@ RSpec.describe 'Agent Bot API', type: :request do
 
         expect { agent_bot.avatar.attachment.reload }.to raise_error(ActiveRecord::RecordNotFound)
         expect(response).to have_http_status(:success)
+      end
+    end
+  end
+
+  describe 'POST /api/v1/accounts/{account.id}/agent_bots/:id/reset_access_token' do
+    context 'when it is an unauthenticated user' do
+      it 'returns unauthorized' do
+        post "/api/v1/accounts/#{account.id}/agent_bots/#{agent_bot.id}/reset_access_token"
+
+        expect(response).to have_http_status(:unauthorized)
+      end
+    end
+
+    context 'when it is an authenticated user' do
+      it 'regenerates the access token when administrator' do
+        old_token = agent_bot.access_token.token
+
+        post "/api/v1/accounts/#{account.id}/agent_bots/#{agent_bot.id}/reset_access_token",
+             headers: admin.create_new_auth_token,
+             as: :json
+
+        expect(response).to have_http_status(:success)
+        agent_bot.reload
+        expect(agent_bot.access_token.token).not_to eq(old_token)
+        json_response = response.parsed_body
+        expect(json_response['access_token']).to eq(agent_bot.access_token.token)
+      end
+
+      it 'would not reset the access token when agent' do
+        old_token = agent_bot.access_token.token
+
+        post "/api/v1/accounts/#{account.id}/agent_bots/#{agent_bot.id}/reset_access_token",
+             headers: agent.create_new_auth_token,
+             as: :json
+
+        expect(response).to have_http_status(:unauthorized)
+        agent_bot.reload
+        expect(agent_bot.access_token.token).to eq(old_token)
+      end
+
+      it 'would not reset access token for a global agent bot' do
+        global_bot = create(:agent_bot)
+        old_token = global_bot.access_token.token
+
+        post "/api/v1/accounts/#{account.id}/agent_bots/#{global_bot.id}/reset_access_token",
+             headers: admin.create_new_auth_token,
+             as: :json
+
+        expect(response).to have_http_status(:not_found)
+        global_bot.reload
+        expect(global_bot.access_token.token).to eq(old_token)
       end
     end
   end

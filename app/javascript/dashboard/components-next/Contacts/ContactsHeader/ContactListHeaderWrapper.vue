@@ -25,6 +25,8 @@ import ContactImportDialog from 'dashboard/components-next/Contacts/ContactsForm
 import CreateSegmentDialog from 'dashboard/components-next/Contacts/ContactsForm/CreateSegmentDialog.vue';
 import DeleteSegmentDialog from 'dashboard/components-next/Contacts/ContactsForm/DeleteSegmentDialog.vue';
 import ContactsFilter from 'dashboard/components-next/filter/ContactsFilter.vue';
+import { usePageCommands } from 'dashboard/modules/command-bar/composables/usePageCommands';
+import { usePolicy } from 'dashboard/composables/usePolicy';
 
 const props = defineProps({
   showSearch: { type: Boolean, default: true },
@@ -36,6 +38,7 @@ const props = defineProps({
   activeSegment: { type: Object, default: null },
   hasAppliedFilters: { type: Boolean, default: false },
   isLabelView: { type: Boolean, default: false },
+  isActiveView: { type: Boolean, default: false },
 });
 
 const emit = defineEmits([
@@ -46,6 +49,7 @@ const emit = defineEmits([
 ]);
 
 const { t } = useI18n();
+const { checkPermissions } = usePolicy();
 const store = useStore();
 const router = useRouter();
 
@@ -61,17 +65,18 @@ const segmentsQuery = ref({});
 
 const appliedFilters = useMapGetter('contacts/getAppliedContactFiltersV4');
 const contactAttributes = useMapGetter('attributes/getContactAttributes');
+const labels = useMapGetter('labels/getLabels');
 const hasActiveSegments = computed(
   () => props.activeSegment && props.segmentsId !== 0
 );
 const activeSegmentName = computed(() => props.activeSegment?.name);
 
-const openCreateNewContactDialog = async () => {
-  await createNewContactDialogRef.value?.contactsFormRef.resetValidation();
+const openCreateNewContactDialog = () => {
   createNewContactDialogRef.value?.dialogRef.open();
 };
 const openContactImportDialog = () =>
   contactImportDialogRef.value?.dialogRef.open();
+
 const openContactExportDialog = () =>
   contactExportDialogRef.value?.dialogRef.open();
 const openCreateSegmentDialog = () =>
@@ -214,6 +219,7 @@ const setParamsForEditSegmentModal = () => {
     countries,
     filterTypes: contactFilterItems,
     allCustomAttributes: useSnakeCase(contactAttributes.value),
+    labels: labels.value || [],
   };
 };
 
@@ -232,6 +238,7 @@ const initializeSegmentToFilterModal = segment => {
 
     return {
       attributeKey: transformed.attributeKey,
+      timezone: transformed.timezone,
       attributeModel: transformed.attributeModel,
       customAttributeType: transformed.customAttributeType,
       filterOperator: transformed.filterOperator,
@@ -266,6 +273,26 @@ const onToggleFilters = () => {
 defineExpose({
   onToggleFilters,
 });
+
+usePageCommands(() => [
+  {
+    id: 'new_contact',
+    title: t('CONTACTS_LAYOUT.HEADER.ACTIONS.CONTACT_CREATION.ADD_CONTACT'),
+    run: openCreateNewContactDialog,
+  },
+  ...(checkPermissions(['administrator', 'contact_manage'])
+    ? [
+        {
+          id: 'import_contacts',
+          title: t(
+            'CONTACTS_LAYOUT.HEADER.ACTIONS.CONTACT_CREATION.IMPORT_CONTACT'
+          ),
+          icon: 'i-lucide-upload',
+          run: openContactImportDialog,
+        },
+      ]
+    : []),
+]);
 </script>
 
 <template>
@@ -277,6 +304,7 @@ defineExpose({
     :header-title="headerTitle"
     :is-segments-view="hasActiveSegments"
     :is-label-view="isLabelView"
+    :is-active-view="isActiveView"
     :has-active-filters="hasAppliedFilters"
     :button-label="t('CONTACTS_LAYOUT.HEADER.MESSAGE_BUTTON')"
     @search="emit('search', $event)"
@@ -289,17 +317,20 @@ defineExpose({
     @delete-segment="openDeleteSegmentDialog"
   >
     <template #filter>
-      <ContactsFilter
-        v-if="showFiltersModal"
-        v-model="appliedFilter"
-        :segment-name="activeSegmentName"
-        :is-segment-view="hasActiveSegments"
-        class="absolute mt-1 ltr:right-0 rtl:left-0 top-full"
-        @apply-filter="onApplyFilter"
-        @update-segment="onUpdateSegment"
-        @close="closeAdvanceFiltersModal"
-        @clear-filters="clearFilters"
-      />
+      <div
+        class="absolute mt-1 ltr:-right-52 rtl:-left-52 sm:ltr:right-0 sm:rtl:left-0 top-full"
+      >
+        <ContactsFilter
+          v-if="showFiltersModal"
+          v-model="appliedFilter"
+          :segment-name="activeSegmentName"
+          :is-segment-view="hasActiveSegments"
+          @apply-filter="onApplyFilter"
+          @update-segment="onUpdateSegment"
+          @close="closeAdvanceFiltersModal"
+          @clear-filters="clearFilters"
+        />
+      </div>
     </template>
   </ContactsHeader>
 
